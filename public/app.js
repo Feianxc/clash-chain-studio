@@ -1521,27 +1521,57 @@ function renderDrawerContent() {
 
   if (ui.drawer === 'benchmark') {
     const last = state.benchmarks[0] || null;
+    const ctrl = ui.bootstrap?.windowsEnv?.controller || {};
     titleEl.textContent = '⚡ 全链第一跳测速';
     subEl.textContent = '固定静态出口逐个测试第一跳，测完自动还原原节点';
     bodyEl.innerHTML = `
-      <form id="drFormBench" class="form-stack">
-        <div class="field"><label>Mihomo Controller 地址</label><input type="text" name="controllerUrl" value="http://127.0.0.1:9097" /></div>
-        <div class="form-2col">
-          <div class="field"><label>Secret（无密码留空）</label><input type="password" name="secret" /></div>
-          <div class="field"><label>测试代理端口</label><input type="number" name="proxyPort" value="${preset.windowsOptions.mixedPort}" /></div>
+      <div class="visual-card ${ctrl.detected ? 'selected' : ''}">
+        <div class="visual-card-row">
+          <strong>${ctrl.detected ? '✅ 已自动连接 Clash Verge 控制器' : '⚠️ 未自动检测到运行中的 Mihomo 控制器'}</strong>
+          <span class="tag ${ctrl.detected ? 'tag-direct' : 'tag-warn'}">${ctrl.detected ? (ctrl.transport === 'pipe' ? 'Named Pipe' : ctrl.transport.toUpperCase()) : '待连接'}</span>
         </div>
-        <button type="submit" class="btn btn-chain">开始测速</button>
+        <div class="sub-text">
+          ${ctrl.detected
+            ? `${esc(ctrl.label)}${ctrl.hasSecret ? ' · 密钥已自动读取' : ''} · 代理口 <span class="mono">${preset.windowsOptions.mixedPort}</span>`
+            : '请确认 Clash Verge 正在运行，或展开下方高级选项手动填入 TCP Controller 地址'}
+        </div>
+        ${ctrl.detected ? `
+          <div class="sub-text">
+            策略组 <code>${esc(preset.windowsOptions.firstHopGroupName)}</code> 当前载入 <strong>${ctrl.liveCandidatesCount}</strong> 个候选节点${ctrl.liveFirstHopNow ? `（现用：${esc(ctrl.liveFirstHopNow)}）` : ''}
+          </div>
+        ` : ''}
+      </div>
+
+      ${ctrl.detected && ctrl.liveCandidatesCount <= 2 ? `
+        <div class="banner-inner warn" style="font-size:12px;">
+          <span>💡 当前策略组里只有 ${ctrl.liveCandidatesCount} 个候选节点；如果想测更多机场节点，先在「第一跳与出口」多勾选几个节点，点「生成并应用」写入并刷新 Clash Verge 后再来批量测速。</span>
+        </div>
+      ` : ''}
+
+      <form id="drFormBench" class="form-stack">
+        <details>
+          <summary class="sub-text" style="cursor:pointer;">高级：手动覆盖其他 Controller 地址或测试端口（默认全自动无需填写）</summary>
+          <div class="form-stack" style="margin-top:10px;">
+            <div class="field"><label>自定义 Controller URL（留空即自动连接 Clash Verge）</label><input type="text" name="controllerUrl" placeholder="留空自动识别 Named Pipe / Unix Socket / TCP" /></div>
+            <div class="form-2col">
+              <div class="field"><label>自定义 Secret（留空自动读取）</label><input type="password" name="secret" placeholder="留空自动读取" /></div>
+              <div class="field"><label>测试代理端口</label><input type="number" name="proxyPort" value="${preset.windowsOptions.mixedPort}" /></div>
+            </div>
+          </div>
+        </details>
+        <button type="submit" class="btn btn-chain" id="btnStartBenchSubmit">⚡ 一键开始全链测速</button>
       </form>
       ${last?.finalists?.length ? `
         <div style="display:flex;flex-direction:column;gap:8px;">
-          <strong>上次测速前五（推荐：${esc(last.recommendedHop || '-')}）</strong>
+          <strong>上次测速结果（推荐：${esc(last.recommendedHop || '-')}）</strong>
+          <div class="sub-text">原节点恢复状态：${esc(last.restoreStatus || '-')}</div>
           ${last.finalists.map(f => `
             <div class="hop-item" data-use-bench="${esc(f.name)}">
               <div>
                 <div style="font-weight:600;font-size:13px;">${esc(f.name)}</div>
-                <div class="sub-text mono">${f.successCount}/${f.totalCount} 通过 · 均值 ${f.meanSec ?? '-'}s</div>
+                <div class="sub-text mono">${f.successCount}/${f.totalCount} 通过 · 均值 ${f.meanSec ?? '-'}s · 最大 ${f.maxSec ?? '-'}s</div>
               </div>
-              <span class="btn btn-secondary btn-sm">采用</span>
+              <span class="btn btn-secondary btn-sm">设为首选</span>
             </div>
           `).join('')}
         </div>
@@ -1550,15 +1580,25 @@ function renderDrawerContent() {
     document.getElementById('drFormBench')?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
+      const btn = document.getElementById('btnStartBenchSubmit');
+      if (btn) { btn.disabled = true; btn.textContent = '测速运行中，请稍候...'; }
       try {
-        toast('全链测速运行中，请稍候...');
+        toast('全链测速运行中，请稍候（结束后自动还原原节点）...');
         const res = await api('/api/benchmark/hops', {
           method: 'POST',
-          body: JSON.stringify({ controllerUrl: fd.get('controllerUrl'), secret: fd.get('secret'), proxyPort: Number(fd.get('proxyPort')) })
+          body: JSON.stringify({
+            controllerUrl: String(fd.get('controllerUrl') || '').trim(),
+            secret: String(fd.get('secret') || '').trim(),
+            proxyPort: Number(fd.get('proxyPort') || preset.windowsOptions.mixedPort)
+          })
         });
-        toast(`测速完成，推荐：${res.benchmark.recommendedHop || '无'}`, 'ok');
+        toast(`测速完成，推荐：${res.benchmark.recommendedHop || '无'}`, res.benchmark.status === 'pass' ? 'ok' : 'info');
         await refresh();
-      } catch (err) { toast(err.message, 'error'); }
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '⚡ 一键开始全链测速'; }
+      }
     });
     bodyEl.querySelectorAll('[data-use-bench]').forEach(el => {
       el.addEventListener('click', () => patchBinding({ primaryFirstHop: el.dataset.useBench }, `已采用最快第一跳：${el.dataset.useBench}`));
@@ -1589,10 +1629,11 @@ async function patchRules(patch, msg) {
 
 async function runImportClashVerge() {
   try {
-    toast('正在只读扫描本机 Clash Verge...');
+    toast('正在只读扫描本机 Clash Verge 全部配置...');
     const res = await api('/api/subscriptions/import-clash-verge', { method: 'POST' });
     ui.dirty = true;
-    toast(`已导入 ${res.importedSubscription} (${res.nodeCount} 节点)`, 'ok');
+    const extra = res.controllerDetected ? ' · 控制器已自动就绪' : '';
+    toast(`已导入 ${res.importedSubscription} (${res.nodeCount} 节点)${res.importedExit ? ' + 静态出口 + 端口配置' : ''}${extra}`, 'ok');
     await refresh(true);
   } catch (err) { toast(err.message, 'error'); }
 }

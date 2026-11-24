@@ -11,6 +11,7 @@ import { normalizeSubscriptionProxies } from './core/rule-engine.mjs';
 import {
   buildCandidatePreview,
   commitAndApplyVersion,
+  discoverClashVergeController,
   importFromLocalClashVerge,
   inspectWindowsEnvironment,
   rollbackWindowsToVersion,
@@ -320,10 +321,11 @@ export function createAppServer({ projectRoot = PROJECT_ROOT } = {}) {
         });
       }
 
-      // 4) 从本机 Clash Verge 一键只读导入
+      // 4) 从本机 Clash Verge 一键只读导入（含订阅、静态出口、端口/核心选项与活跃控制器）
       if (pathname === '/api/subscriptions/import-clash-verge' && method === 'POST') {
         const current = store.load();
         const imported = importFromLocalClashVerge(current, vault, StateStore.nextId);
+        const controller = await discoverClashVergeController(current.deviceBindings.windows.clashVergeDir);
         const updatedState = store.update((s) => {
           // 导入真实配置后清理初始示例占位，避免 203.0.113.10 干扰
           s.subscriptions = s.subscriptions.filter(x => !x.isSample);
@@ -339,6 +341,12 @@ export function createAppServer({ projectRoot = PROJECT_ROOT } = {}) {
             s.staticExits.push(imported.importedExit);
             s.activeBinding.staticExitId = imported.importedExit.id;
           }
+          if (imported.importedWindowsOptions && Object.keys(imported.importedWindowsOptions).length > 0) {
+            const preset = s.rulePresets.find(p => p.id === s.activeBinding.rulePresetId) || s.rulePresets[0];
+            if (preset) {
+              preset.windowsOptions = { ...preset.windowsOptions, ...imported.importedWindowsOptions };
+            }
+          }
           return s;
         });
         return sendJson(res, 200, {
@@ -346,6 +354,9 @@ export function createAppServer({ projectRoot = PROJECT_ROOT } = {}) {
           nodeCount: imported.subscription.nodes.length,
           importedExit: imported.importedExit ? imported.importedExit.name : null,
           discoveredHops: imported.discoveredHops,
+          importedWindowsOptions: imported.importedWindowsOptions,
+          controllerDetected: controller.detected,
+          controllerLabel: controller.label,
           state: sanitizeStateForClient(updatedState, vault)
         });
       }
@@ -627,21 +638,36 @@ export function createAppServer({ projectRoot = PROJECT_ROOT } = {}) {
         return sendJson(res, 200, { probe: record, state: sanitizeStateForClient(updatedState, vault) });
       }
 
-      // 第一跳全链测速
+      // 第一跳全链测速（自动发现 Clash Verge Named Pipe / Unix Socket / TCP 及 Secret）
       if (pathname === '/api/benchmark/hops' && method === 'POST') {
         const body = await readJsonBody(req);
         const state = store.load();
         const exit = state.staticExits.find(e => e.id === state.activeBinding.staticExitId);
         const preset = state.rulePresets.find(p => p.id === state.activeBinding.rulePresetId) || state.rulePresets[0];
 
-        const controllerUrl = String(body.controllerUrl || 'http://127.0.0.1:9097').trim();
-        const secret = String(body.secret || '').trim();
+        let controllerUrl = String(body.controllerUrl || '').trim();
+        let socketPath = '';
+        let secret = String(body.secret || '').trim();
+
+        if (!controllerUrl) {
+          const detected = await discoverClashVergeController(state.deviceBindings.windows.clashVergeDir);
+          if (!detected.detected) {
+            return sendJson(res, 400, {
+              error: '未能自动发现运行中的 Clash Verge / Mihomo 控制器（Named Pipe 与 9097/9090 均未响应）。请确认 Clash Verge 已启动，或在高级选项中手动填入 External Controller 地址。'
+            });
+          }
+          controllerUrl = detected.controllerUrl;
+          socketPath = detected.socketPath;
+          if (!secret) secret = detected.secret;
+        }
+
         const groupName = String(body.groupName || preset.windowsOptions.firstHopGroupName).trim();
         const proxyPort = Number(body.proxyPort || preset.windowsOptions.mixedPort);
-        const expectedIp = String(body.expectedIp || exit?.expectedIp || '').trim();
+        const expectedIp = String(body.expectedIp || (exit?.isSample ? '' : exit?.expectedIp) || '').trim();
 
         const report = await benchmarkFirstHops({
           controllerUrl,
+          socketPath,
           secret,
           groupName,
           proxyPort,

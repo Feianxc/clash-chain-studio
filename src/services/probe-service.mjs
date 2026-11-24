@@ -290,11 +290,10 @@ export async function probeProxyEndpoint({
 }
 
 /**
- * 调用 Mihomo External Controller API（严格区分只读 GET 与变更 PUT）。
+ * 调用 Mihomo External Controller API（支持 TCP HTTP、Windows Named Pipe 与 Unix Socket，严格区分只读 GET 与变更 PUT）。
  */
-export function callMihomoApi({ controllerUrl, secret = '', apiPath, method = 'GET', body = null, timeoutMs = 6000 }) {
+export function callMihomoApi({ controllerUrl = '', socketPath = '', secret = '', apiPath, method = 'GET', body = null, timeoutMs = 6000 }) {
   return new Promise((resolve, reject) => {
-    const url = new URL(apiPath, controllerUrl.endsWith('/') ? controllerUrl : `${controllerUrl}/`);
     const payload = body !== null ? JSON.stringify(body) : null;
     const headers = { Accept: 'application/json' };
     if (secret) headers.Authorization = `Bearer ${secret}`;
@@ -303,34 +302,48 @@ export function callMihomoApi({ controllerUrl, secret = '', apiPath, method = 'G
       headers['Content-Length'] = Buffer.byteLength(payload);
     }
 
-    const req = http.request(
-      {
+    let reqOpts;
+    let targetDesc;
+    if (socketPath) {
+      reqOpts = {
+        socketPath,
+        path: apiPath.startsWith('/') ? apiPath : `/${apiPath}`,
+        method,
+        headers,
+        timeout: timeoutMs
+      };
+      targetDesc = socketPath;
+    } else {
+      const url = new URL(apiPath, controllerUrl.endsWith('/') ? controllerUrl : `${controllerUrl}/`);
+      reqOpts = {
         hostname: url.hostname,
         port: Number(url.port || 80),
         path: url.pathname + url.search,
         method,
         headers,
         timeout: timeoutMs
-      },
-      (res) => {
-        let text = '';
-        res.setEncoding('utf8');
-        res.on('data', (chunk) => { text += chunk; });
-        res.on('end', () => {
-          if (res.statusCode < 200 || res.statusCode >= 300) {
-            return reject(new Error(`Mihomo API ${method} ${apiPath} 返回 HTTP ${res.statusCode}: ${text.slice(0, 200)}`));
-          }
-          if (!text.trim()) return resolve(null);
-          try {
-            resolve(JSON.parse(text));
-          } catch {
-            resolve(text);
-          }
-        });
-      }
-    );
+      };
+      targetDesc = controllerUrl;
+    }
+
+    const req = http.request(reqOpts, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { text += chunk; });
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          return reject(new Error(`Mihomo API ${method} ${apiPath} 返回 HTTP ${res.statusCode}: ${text.slice(0, 200)}`));
+        }
+        if (!text.trim()) return resolve(null);
+        try {
+          resolve(JSON.parse(text));
+        } catch {
+          resolve(text);
+        }
+      });
+    });
     req.on('timeout', () => { req.destroy(); reject(new Error(`Mihomo API 请求超时: ${apiPath}`)); });
-    req.on('error', (err) => reject(new Error(`无法连接 Mihomo Controller (${controllerUrl}): ${err.message}`)));
+    req.on('error', (err) => reject(new Error(`无法连接 Mihomo Controller (${targetDesc}): ${err.message}`)));
     if (payload !== null) req.write(payload);
     req.end();
   });
@@ -340,7 +353,8 @@ export function callMihomoApi({ controllerUrl, secret = '', apiPath, method = 'G
  * 固定静态末跳，逐一筛选第一跳并复测前 N 名；结束后强制恢复测试前的真实选中节点。
  */
 export async function benchmarkFirstHops({
-  controllerUrl,
+  controllerUrl = '',
+  socketPath = '',
   secret = '',
   groupName = 'Static-First-Hop',
   proxyPort = 7897,
@@ -353,7 +367,7 @@ export async function benchmarkFirstHops({
 }) {
   const startedAt = new Date().toISOString();
   const encodedGroup = encodeURIComponent(groupName);
-  const groupInfo = await callMihomoApi({ controllerUrl, secret, apiPath: `/proxies/${encodedGroup}` });
+  const groupInfo = await callMihomoApi({ controllerUrl, socketPath, secret, apiPath: `/proxies/${encodedGroup}` });
   if (!groupInfo || !Array.isArray(groupInfo.all)) {
     throw new Error(`策略组 ${groupName} 不存在或不可切换`);
   }
@@ -376,12 +390,13 @@ export async function benchmarkFirstHops({
   const selectAndVerify = async (hopName) => {
     await callMihomoApi({
       controllerUrl,
+      socketPath,
       secret,
       apiPath: `/proxies/${encodedGroup}`,
       method: 'PUT',
       body: { name: hopName }
     });
-    const readback = await callMihomoApi({ controllerUrl, secret, apiPath: `/proxies/${encodedGroup}` });
+    const readback = await callMihomoApi({ controllerUrl, socketPath, secret, apiPath: `/proxies/${encodedGroup}` });
     if (readback?.now !== hopName) {
       throw new Error(`节点切换回读不一致：期望 ${hopName}，实际 ${readback?.now}`);
     }

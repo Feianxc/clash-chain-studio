@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { parseYaml } from '../core/yaml-bridge.mjs';
 import { writeFileAtomic } from '../core/vault.mjs';
 import { normalizeSubscriptionProxies } from '../core/rule-engine.mjs';
@@ -13,7 +13,118 @@ import {
   generateWindowsScript,
   validateCandidate
 } from '../core/generators.mjs';
-import { checkTcpPortOpen, probeRelayHealth } from './probe-service.mjs';
+import { callMihomoApi, checkTcpPortOpen, probeRelayHealth } from './probe-service.mjs';
+
+function listWindowsMihomoPipes() {
+  if (process.platform !== 'win32') return [];
+  const res = spawnSync(
+    'pwsh.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', "[IO.Directory]::GetFiles('\\\\.\\pipe\\') | Where-Object { $_ -match 'verge-mihomo|mihomo' } | ConvertTo-Json -Compress"],
+    { encoding: 'utf8', windowsHide: true, timeout: 3000 }
+  );
+  if (res.error || res.status !== 0 || !res.stdout?.trim()) return [];
+  try {
+    const parsed = JSON.parse(res.stdout.trim());
+    return Array.isArray(parsed) ? parsed : (typeof parsed === 'string' ? [parsed] : []);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 自动发现本机正在运行的 Clash Verge Rev / Mihomo Controller（支持 Windows Named Pipe、Unix Socket 与 TCP）。
+ * 优先兼容 Clash Verge Rev 2.x Service Mode（-sidecar-release- 与 -production- 管道自动匹配）。
+ */
+export async function discoverClashVergeController(clashVergeDir) {
+  const genRead = safeReadFile(path.join(clashVergeDir || '', 'clash-verge.yaml'));
+  let secret = '';
+  let cfgPipe = '';
+  let cfgUnix = '';
+  let cfgTcp = '';
+
+  if (genRead.readable) {
+    try {
+      const doc = parseYaml(genRead.content);
+      secret = String(doc?.secret || '').trim();
+      cfgPipe = String(doc?.['external-controller-pipe'] || '').trim();
+      cfgUnix = String(doc?.['external-controller-unix'] || '').trim();
+      cfgTcp = String(doc?.['external-controller'] || '').trim();
+    } catch { /* ignore */ }
+  }
+
+  const candidates = [];
+  const seen = new Set();
+  const addCandidate = (cand) => {
+    const key = `${cand.transport}:${cand.socketPath || cand.controllerUrl}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      candidates.push(cand);
+    }
+  };
+
+  if (process.platform === 'win32') {
+    if (cfgPipe) {
+      // Service Mode 常把 -sidecar-release- 改为 -production-，优先同时探测两者
+      if (cfgPipe.includes('-sidecar-release-')) {
+        addCandidate({
+          transport: 'pipe',
+          socketPath: cfgPipe.replace('-sidecar-release-', '-production-'),
+          label: 'Clash Verge Service Pipe (自动识别)'
+        });
+      }
+      addCandidate({ transport: 'pipe', socketPath: cfgPipe, label: 'Clash Verge Pipe (自动识别)' });
+    }
+    // 动态扫描本机存活的 Mihomo 命名管道
+    for (const p of listWindowsMihomoPipes()) {
+      addCandidate({ transport: 'pipe', socketPath: p, label: 'Clash Verge Named Pipe (自动识别)' });
+    }
+  } else if (cfgUnix && fs.existsSync(cfgUnix)) {
+    addCandidate({ transport: 'unix', socketPath: cfgUnix, label: 'Clash Verge Unix Socket (自动识别)' });
+  }
+
+  if (cfgTcp) {
+    const normalizedTcp = cfgTcp.startsWith('http') ? cfgTcp : `http://${cfgTcp.replace(/^:/, '127.0.0.1:')}`;
+    addCandidate({ transport: 'tcp', controllerUrl: normalizedTcp, label: `Clash Controller (${normalizedTcp})` });
+  }
+  addCandidate({ transport: 'tcp', controllerUrl: 'http://127.0.0.1:9097', label: 'Mihomo TCP (127.0.0.1:9097)' });
+  addCandidate({ transport: 'tcp', controllerUrl: 'http://127.0.0.1:9090', label: 'Mihomo TCP (127.0.0.1:9090)' });
+
+  for (const cand of candidates) {
+    try {
+      const ver = await callMihomoApi({
+        controllerUrl: cand.controllerUrl || '',
+        socketPath: cand.socketPath || '',
+        secret,
+        apiPath: '/version',
+        timeoutMs: 1200
+      });
+      if (ver && typeof ver === 'object') {
+        return {
+          detected: true,
+          transport: cand.transport,
+          socketPath: cand.socketPath || '',
+          controllerUrl: cand.controllerUrl || '',
+          secret,
+          hasSecret: Boolean(secret),
+          label: cand.label,
+          coreVersion: ver.version || ''
+        };
+      }
+    } catch {
+      // 尝试下一个候选通道
+    }
+  }
+
+  return {
+    detected: false,
+    transport: null,
+    socketPath: '',
+    controllerUrl: '',
+    secret: '',
+    hasSecret: Boolean(secret),
+    label: '未检测到运行中的 Mihomo Controller'
+  };
+}
 
 function sha256(text) {
   return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
@@ -75,12 +186,31 @@ export async function inspectWindowsEnvironment(state) {
     try { envMode = JSON.parse(modeFile.content); } catch { /* ignore */ }
   }
 
-  const [rulePort, upstreamPort, relayPort, relayHealth] = await Promise.all([
+  const [rulePort, upstreamPort, relayPort, relayHealth, controller] = await Promise.all([
     checkTcpPortOpen(winOpts.mixedPort),
     checkTcpPortOpen(winOpts.upstreamPort),
     checkTcpPortOpen(winOpts.relayPort),
-    probeRelayHealth(winOpts.relayPort)
+    probeRelayHealth(winOpts.relayPort),
+    discoverClashVergeController(clashDir)
   ]);
+
+  let liveFirstHopNow = null;
+  let liveCandidatesCount = 0;
+  if (controller.detected) {
+    try {
+      const grp = await callMihomoApi({
+        controllerUrl: controller.controllerUrl,
+        socketPath: controller.socketPath,
+        secret: controller.secret,
+        apiPath: `/proxies/${encodeURIComponent(winOpts.firstHopGroupName || 'Static-First-Hop')}`,
+        timeoutMs: 1500
+      });
+      if (grp) {
+        liveFirstHopNow = grp.now || null;
+        liveCandidatesCount = Array.isArray(grp.all) ? grp.all.filter(x => x !== 'DIRECT' && x !== 'REJECT').length : 0;
+      }
+    } catch { /* ignore */ }
+  }
 
   const resolveShortcutPath = (customDir, customFile, bundledFile) => {
     const custom = customDir ? path.join(customDir, customFile) : '';
@@ -143,6 +273,15 @@ export async function inspectWindowsEnvironment(state) {
       upstream: upstreamPort,
       relay: relayPort
     },
+    controller: {
+      detected: controller.detected,
+      transport: controller.transport,
+      label: controller.label,
+      hasSecret: controller.hasSecret,
+      coreVersion: controller.coreVersion || '',
+      liveFirstHopNow,
+      liveCandidatesCount
+    },
     relayHealth,
     environmentMode: envMode,
     shortcuts
@@ -201,10 +340,11 @@ export function importFromLocalClashVerge(state, vault, nextIdFn) {
     isSample: false
   };
 
-  // 尝试从 clash-verge.yaml 或 profiles/Script.js 提取已存在的静态末跳与第一跳组
+  // 尝试从 clash-verge.yaml 或 profiles/Script.js 提取已存在的静态末跳、第一跳组与全部核心选项
   let importedExit = null;
   let discoveredHops = [];
   let rawNode = null;
+  const importedWindowsOptions = {};
 
   const genRead = safeReadFile(path.join(clashDir, 'clash-verge.yaml'));
   if (genRead.readable) {
@@ -212,15 +352,44 @@ export function importFromLocalClashVerge(state, vault, nextIdFn) {
       const genDoc = parseYaml(genRead.content);
       const genProxies = Array.isArray(genDoc.proxies) ? genDoc.proxies : [];
       const genGroups = Array.isArray(genDoc['proxy-groups']) ? genDoc['proxy-groups'] : [];
+      const genListeners = Array.isArray(genDoc.listeners) ? genDoc.listeners : [];
+
+      if (Number.isInteger(genDoc['mixed-port'])) importedWindowsOptions.mixedPort = genDoc['mixed-port'];
+      if (typeof genDoc.ipv6 === 'boolean') importedWindowsOptions.ipv6 = genDoc.ipv6;
+      if (typeof genDoc['allow-lan'] === 'boolean') importedWindowsOptions.allowLan = genDoc['allow-lan'];
+      if (genDoc.tun && typeof genDoc.tun.enable === 'boolean') importedWindowsOptions.tunEnable = genDoc.tun.enable;
+      if (genDoc.dns?.listen) importedWindowsOptions.dnsListen = String(genDoc.dns.listen);
+      if (Array.isArray(genDoc.dns?.['direct-nameserver']) && genDoc.dns['direct-nameserver'].length) {
+        importedWindowsOptions.domesticDns = genDoc.dns['direct-nameserver'].map(String);
+      }
 
       const firstGroup = genGroups.find(g => g.name === 'Static-First-Hop');
       if (firstGroup && Array.isArray(firstGroup.proxies)) {
+        importedWindowsOptions.firstHopGroupName = firstGroup.name;
         const validSet = new Set(normalized.nodes.map(n => n.name));
         discoveredHops = firstGroup.proxies.filter(n => validSet.has(n));
       }
 
       rawNode = genProxies.find(p => p['dialer-proxy'] === 'Static-First-Hop' && (p.type === 'http' || p.type === 'socks5'))
-        || genProxies.find(p => p.name === 'NodeMaven-US-HTTP' || p.name === 'NodeMaven-US-SOCKS5');
+        || genProxies.find(p => p.name === 'NodeMaven-US-HTTP' || p.name === 'Static-Exit-Raw');
+      if (rawNode?.name) importedWindowsOptions.rawProxyName = rawNode.name;
+
+      // 识别本地 IPv4 Relay 前端代理节点（127.0.0.1:17902 等）
+      const frontendNode = genProxies.find(p =>
+        p.type === 'http' && p.server === '127.0.0.1' && Number(p.port) !== Number(genDoc['mixed-port']) &&
+        (p.name === 'NodeMaven-US-Chain' || p.name === 'Static-Exit-Chain' || Number(p.port) === 17902)
+      );
+      if (frontendNode) {
+        importedWindowsOptions.frontendProxyName = frontendNode.name;
+        importedWindowsOptions.relayPort = Number(frontendNode.port);
+      }
+
+      // 识别上游 listener（127.0.0.1:17901 等）
+      const upstreamListener = genListeners.find(l => l.proxy === rawNode?.name || Number(l.port) === 17901);
+      if (upstreamListener) {
+        importedWindowsOptions.upstreamListenerName = upstreamListener.name;
+        importedWindowsOptions.upstreamPort = Number(upstreamListener.port);
+      }
     } catch { /* ignore */ }
   }
 
@@ -267,7 +436,7 @@ export function importFromLocalClashVerge(state, vault, nextIdFn) {
     };
   }
 
-  return { subscription, importedExit, discoveredHops };
+  return { subscription, importedExit, discoveredHops, importedWindowsOptions };
 }
 
 /**
