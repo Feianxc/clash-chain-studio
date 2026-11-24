@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chain Studio · 链式代理可视化工作台</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <!-- 顶部极简导航栏 -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand" id="brandHome" title="回到链路画布">
+          <span class="brand-logo" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+          </span>
+          <span class="brand-name">Chain Studio</span>
+          <span id="topStatusDot" class="status-dot dot-neutral" title="配置状态"></span>
+        </div>
+
+        <nav class="seg-nav" aria-label="主视图切换">
+          <button class="seg-btn active" data-tab="canvas">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M7.5 11.2 16.5 6.8M7.5 12.8 16.5 17.2"/></svg>
+            <span>链路画布</span>
+          </button>
+          <button class="seg-btn" data-tab="android">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M12 17.5h.01"/></svg>
+            <span>手机配置</span>
+          </button>
+          <button class="seg-btn" data-tab="nodes">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a14 14 0 0 1 0 18"/></svg>
+            <span>第一跳与出口</span>
+          </button>
+          <button class="seg-btn" data-tab="hygiene">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+            <span>环境体检</span>
+          </button>
+          <button class="seg-btn" data-tab="rules">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h13"/><circle cx="19" cy="12" r="2"/></svg>
+            <span>规则与备份</span>
+          </button>
+        </nav>
+
+        <div class="topbar-right">
+          <button class="icon-btn" id="btnToggleTheme" title="切换浅色 / 深色" aria-label="切换主题">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          </button>
+          <button class="btn btn-secondary" id="btnQuickProbe">测出口</button>
+          <button class="btn btn-primary" id="btnOpenApply">
+            <span>生成并应用</span>
+            <span id="pendingDot" class="btn-dot hidden"></span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 轻量提示条（仅在有阻塞错误或示例提示时出现） -->
+    <div id="bannerSlot" class="banner-slot hidden"></div>
+
+    <!-- 主内容画布 -->
+    <main id="viewRoot" class="view-root">
+      <div class="loading-state">正在读取链式代理拓扑...</div>
+    </main>
+  </div>
+
+  <!-- 右侧滑出式快速替换抽屉（点击画布上的第一跳/静态出口/导入/测速直接呼出） -->
+  <div id="drawerBackdrop" class="drawer-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="drawer-panel">
+      <div class="drawer-header">
+        <div>
+          <h2 id="drawerTitle">快速替换</h2>
+          <p id="drawerSubtitle" class="sub-text"></p>
+        </div>
+        <button class="icon-btn" id="btnCloseDrawer" aria-label="关闭抽屉">✕</button>
+      </div>
+      <div id="drawerBody" class="drawer-body"></div>
+    </div>
+  </div>
+
+  <!-- 预览与应用确认弹窗 -->
+  <div id="applyBackdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2>确认并发布配置</h2>
+          <p id="applySubtitle" class="sub-text">一次操作同步生成电脑与手机双端配置</p>
+        </div>
+        <button class="icon-btn" id="btnCloseApply" aria-label="关闭">✕</button>
+      </div>
+      <div id="applyBody" class="modal-body"></div>
+      <div class="modal-footer">
+        <div class="footer-checks">
+          <label class="check-row">
+            <input type="checkbox" id="chkApplyWin" />
+            <span>同时写入本机 Clash Verge <code>profiles/Script.js</code>（自动先备份原文件）</span>
+          </label>
+          <label class="check-row">
+            <input type="checkbox" id="chkAndroidCtrl" />
+            <span>手机 YAML 内含临时 ADB Controller（127.0.0.1:19090）</span>
+          </label>
+        </div>
+        <div class="footer-btns">
+          <button class="btn btn-secondary" id="btnCancelApply">取消</button>
+          <button class="btn btn-primary" id="btnConfirmApply">确认生成</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

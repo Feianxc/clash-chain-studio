@@ -1,0 +1,17 @@
+# 本地运行数据、加密凭据与生成产物（严禁提交）
+data/
+output/
+*.local.json
+.vault.key
+.env
+.env.*
+*.log
+*.bak
+*.tmp
+
+# 依赖与系统文件
+node_modules/
+tmp/
+.DS_Store
+Thumbs.db
+desktop.ini

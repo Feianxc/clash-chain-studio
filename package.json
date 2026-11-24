@@ -1,0 +1,37 @@
+{
+  "name": "clash-chain-studio",
+  "version": "1.0.0",
+  "description": "Visual WYSIWYG chained-proxy & Mihomo/Clash rule studio for Windows, macOS/Linux, and Android — independent first-hop & static residential IP swapping, dual Android profiles, and Claude environment consistency guard.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/Feianxc/clash-chain-studio#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Feianxc/clash-chain-studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Feianxc/clash-chain-studio/issues"
+  },
+  "keywords": [
+    "clash",
+    "mihomo",
+    "clash-verge",
+    "clash-meta",
+    "chained-proxy",
+    "dialer-proxy",
+    "static-residential-ip",
+    "claude",
+    "proxy-studio",
+    "android-adb"
+  ],
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check:privacy": "node scripts/check-privacy.mjs",
+    "check:syntax": "node --check public/app.js && node --check runtime/StaticChainIPv4Relay.cjs && node --check runtime/Start-ClaudeStaticGuard.cjs",
+    "verify": "npm run check:privacy && npm run check:syntax && npm test"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
