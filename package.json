@@ -26,7 +26,7 @@
   ],
   "scripts": {
     "start": "node src/server.mjs",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test tests",
     "check:privacy": "node scripts/check-privacy.mjs",
     "check:syntax": "node --check public/app.js && node --check runtime/StaticChainIPv4Relay.cjs && node --check runtime/Start-ClaudeStaticGuard.cjs",
     "verify": "npm run check:privacy && npm run check:syntax && npm test"
