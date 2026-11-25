@@ -33,7 +33,8 @@
   --font-mono: "JetBrains Mono", "Cascadia Mono", "Consolas", ui-monospace, monospace;
 }
 
-[data-theme="dark"] {
+:root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #0f1115;
   --canvas-dot: #20242d;
   --surface: #171a21;
@@ -43,20 +44,20 @@
   --border-strong: #394152;
   --ink: #f3f4f6;
   --ink-2: #a5adbc;
-  --ink-3: #6f7787;
+  --ink-3: #7f8899;
 
   --chain: #60a5fa;
-  --chain-soft: rgba(59, 130, 246, 0.14);
-  --chain-ring: rgba(96, 165, 250, 0.28);
+  --chain-soft: rgba(59, 130, 246, 0.16);
+  --chain-ring: rgba(96, 165, 250, 0.3);
 
   --direct: #4ade80;
-  --direct-soft: rgba(34, 197, 94, 0.14);
+  --direct-soft: rgba(34, 197, 94, 0.16);
   --direct-ring: rgba(74, 222, 128, 0.28);
 
   --warn: #fbbf24;
-  --warn-soft: rgba(245, 158, 11, 0.14);
+  --warn-soft: rgba(245, 158, 11, 0.16);
   --danger: #f87171;
-  --danger-soft: rgba(239, 68, 68, 0.14);
+  --danger-soft: rgba(239, 68, 68, 0.16);
 
   --shadow-card: 0 2px 10px rgba(0, 0, 0, 0.28);
   --shadow-float: 0 20px 50px rgba(0, 0, 0, 0.55);
@@ -452,13 +453,25 @@ code {
   border-color: var(--warn);
   box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.22);
 }
-.t-node.dimmed { opacity: 0.36; }
+.t-node.dimmed { opacity: 0.48; }
 
 .t-node-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+  min-width: 0;
+}
+
+.t-node-head > .row {
+  min-width: 0;
+  flex: 1;
+  flex-wrap: nowrap;
+}
+
+.t-node-head > .row > div {
+  min-width: 0;
+  flex: 1;
 }
 
 .t-icon {

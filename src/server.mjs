@@ -328,19 +328,49 @@ export function createAppServer({ projectRoot = PROJECT_ROOT } = {}) {
         const imported = importFromLocalClashVerge(current, vault, StateStore.nextId);
         const controller = await discoverClashVergeController(current.deviceBindings.windows.clashVergeDir);
         const updatedState = store.update((s) => {
-          // 导入真实配置后清理初始示例占位，避免 203.0.113.10 干扰
+          // 导入真实配置后清理初始示例占位，并按来源幂等更新（避免重复导入产生重复条目）
           s.subscriptions = s.subscriptions.filter(x => !x.isSample);
-          s.subscriptions.push(imported.subscription);
-          s.activeBinding.subscriptionId = imported.subscription.id;
+          const existingSubIdx = s.subscriptions.findIndex(x =>
+            x.sourceType === 'clash-verge' && (x.sourceFile === imported.subscription.sourceFile || x.name === imported.subscription.name)
+          );
+          let activeSubId = imported.subscription.id;
+          if (existingSubIdx >= 0) {
+            const old = s.subscriptions[existingSubIdx];
+            if (old.urlRef && old.urlRef !== imported.subscription.urlRef) vault.deleteSecret(old.urlRef);
+            activeSubId = old.id;
+            s.subscriptions[existingSubIdx] = { ...imported.subscription, id: old.id };
+          } else {
+            s.subscriptions.push(imported.subscription);
+          }
+          s.activeBinding.subscriptionId = activeSubId;
+
           const hops = imported.discoveredHops.length
             ? imported.discoveredHops
             : imported.subscription.nodes.slice(0, 2).map(n => n.name);
           s.activeBinding.selectedFirstHops = hops;
           s.activeBinding.primaryFirstHop = hops[0] || null;
+
           if (imported.importedExit) {
             s.staticExits = s.staticExits.filter(x => !x.isSample);
-            s.staticExits.push(imported.importedExit);
-            s.activeBinding.staticExitId = imported.importedExit.id;
+            const existingExitIdx = s.staticExits.findIndex(x =>
+              x.provider === '本机 Clash Verge 导入' && x.server === imported.importedExit.server && Number(x.port) === Number(imported.importedExit.port)
+            );
+            let activeExitId = imported.importedExit.id;
+            if (existingExitIdx >= 0) {
+              const oldExit = s.staticExits[existingExitIdx];
+              if (oldExit.credentialRef && oldExit.credentialRef !== imported.importedExit.credentialRef) {
+                vault.deleteSecret(oldExit.credentialRef);
+              }
+              activeExitId = oldExit.id;
+              s.staticExits[existingExitIdx] = {
+                ...imported.importedExit,
+                id: oldExit.id,
+                region: oldExit.region && !oldExit.region.includes('待核实') ? oldExit.region : imported.importedExit.region
+              };
+            } else {
+              s.staticExits.push(imported.importedExit);
+            }
+            s.activeBinding.staticExitId = activeExitId;
           }
           if (imported.importedWindowsOptions && Object.keys(imported.importedWindowsOptions).length > 0) {
             const preset = s.rulePresets.find(p => p.id === s.activeBinding.rulePresetId) || s.rulePresets[0];

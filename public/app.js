@@ -769,23 +769,7 @@ function renderNodesView(root) {
           ${sub?.hasUrl ? `<button class="btn btn-secondary btn-sm" id="btnRefreshActiveSub">刷新订阅</button>` : ''}
         </div>
 
-        <div class="hop-grid">
-          ${visibleNodes.map(n => {
-            const inGrp = selSet.has(n.name);
-            const isPri = primaryHop === n.name;
-            return `
-              <div class="hop-item ${inGrp ? 'in-group' : ''} ${isPri ? 'is-primary' : ''}" data-toggle-hop="${esc(n.name)}">
-                <div style="min-width:0;">
-                  <div style="font-size:13px;font-weight:620;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(n.name)}">${esc(n.name)}</div>
-                  <div class="sub-text mono" style="font-size:11px;">${esc(n.type.toUpperCase())} · ${esc(n.server)}</div>
-                </div>
-                <button class="btn ${isPri ? 'btn-chain' : 'btn-ghost'} btn-sm btn-star-hop" data-star="${esc(n.name)}" title="设为首选第一跳">
-                  ${isPri ? '★ 首选' : '☆'}
-                </button>
-              </div>
-            `;
-          }).join('')}
-        </div>
+        <div class="hop-grid" id="nodesHopGrid"></div>
       </section>
 
       <!-- 右：静态出口卡片墙 -->
@@ -834,11 +818,49 @@ function renderNodesView(root) {
     btn.addEventListener('click', () => patchBinding({ subscriptionId: btn.dataset.pickSub }, '已切换第一跳订阅'));
   });
 
+  const renderHopGridOnly = () => {
+    const grid = document.getElementById('nodesHopGrid');
+    if (!grid) return;
+    const kw = ui.nodeSearch.trim().toLowerCase();
+    const filtered = (sub?.nodes || []).filter(n => !kw || n.name.toLowerCase().includes(kw) || n.server.toLowerCase().includes(kw));
+    grid.innerHTML = filtered.length === 0
+      ? '<div class="sub-text">没有匹配的节点</div>'
+      : filtered.map(n => {
+        const inGrp = selSet.has(n.name);
+        const isPri = primaryHop === n.name;
+        return `
+          <div class="hop-item ${inGrp ? 'in-group' : ''} ${isPri ? 'is-primary' : ''}" data-toggle-hop="${esc(n.name)}">
+            <div style="min-width:0;">
+              <div style="font-size:13px;font-weight:620;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(n.name)}">${esc(n.name)}</div>
+              <div class="sub-text mono" style="font-size:11px;">${esc(n.type.toUpperCase())} · ${esc(n.server)}</div>
+            </div>
+            <button class="btn ${isPri ? 'btn-chain' : 'btn-ghost'} btn-sm btn-star-hop" data-star="${esc(n.name)}" title="设为首选第一跳">
+              ${isPri ? '★ 首选' : '☆'}
+            </button>
+          </div>
+        `;
+      }).join('');
+
+    grid.querySelectorAll('.btn-star-hop').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        patchBinding({ primaryFirstHop: btn.dataset.star }, `首选第一跳已设为 ${btn.dataset.star}`);
+      });
+    });
+    grid.querySelectorAll('[data-toggle-hop]').forEach(card => {
+      card.addEventListener('click', () => {
+        const name = card.dataset.toggleHop;
+        const set = new Set(state.activeBinding.selectedFirstHops || []);
+        if (set.has(name)) set.delete(name); else set.add(name);
+        patchBinding({ selectedFirstHops: [...set] }, set.has(name) ? `已加入备选：${name}` : `已移出备选：${name}`);
+      });
+    });
+  };
+  renderHopGridOnly();
+
   document.getElementById('nodesSearchInput')?.addEventListener('input', (e) => {
     ui.nodeSearch = e.target.value;
-    renderNodesView(root);
-    const el = document.getElementById('nodesSearchInput');
-    if (el) { el.focus(); el.selectionStart = el.selectionEnd = el.value.length; }
+    renderHopGridOnly();
   });
 
   document.getElementById('btnRefreshActiveSub')?.addEventListener('click', async () => {
@@ -848,22 +870,6 @@ function renderNodesView(root) {
       toast(`已刷新（${res.nodeCount} 节点）`, 'ok');
       await refresh(true);
     } catch (err) { toast(err.message, 'error'); }
-  });
-
-  root.querySelectorAll('.btn-star-hop').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      patchBinding({ primaryFirstHop: btn.dataset.star }, `首选第一跳已设为 ${btn.dataset.star}`);
-    });
-  });
-
-  root.querySelectorAll('[data-toggle-hop]').forEach(card => {
-    card.addEventListener('click', () => {
-      const name = card.dataset.toggleHop;
-      const set = new Set(state.activeBinding.selectedFirstHops || []);
-      if (set.has(name)) set.delete(name); else set.add(name);
-      patchBinding({ selectedFirstHops: [...set] }, set.has(name) ? `已加入备选：${name}` : `已移出备选：${name}`);
-    });
   });
 
   root.querySelectorAll('.btn-pick-exit').forEach(btn => {
