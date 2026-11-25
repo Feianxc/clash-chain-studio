@@ -62,34 +62,7 @@ export async function discoverClashVergeController(clashVergeDir) {
     }
   };
 
-  if (process.platform === 'win32') {
-    if (cfgPipe) {
-      // Service Mode 常把 -sidecar-release- 改为 -production-，优先同时探测两者
-      if (cfgPipe.includes('-sidecar-release-')) {
-        addCandidate({
-          transport: 'pipe',
-          socketPath: cfgPipe.replace('-sidecar-release-', '-production-'),
-          label: 'Clash Verge Service Pipe (自动识别)'
-        });
-      }
-      addCandidate({ transport: 'pipe', socketPath: cfgPipe, label: 'Clash Verge Pipe (自动识别)' });
-    }
-    // 动态扫描本机存活的 Mihomo 命名管道
-    for (const p of listWindowsMihomoPipes()) {
-      addCandidate({ transport: 'pipe', socketPath: p, label: 'Clash Verge Named Pipe (自动识别)' });
-    }
-  } else if (cfgUnix && fs.existsSync(cfgUnix)) {
-    addCandidate({ transport: 'unix', socketPath: cfgUnix, label: 'Clash Verge Unix Socket (自动识别)' });
-  }
-
-  if (cfgTcp) {
-    const normalizedTcp = cfgTcp.startsWith('http') ? cfgTcp : `http://${cfgTcp.replace(/^:/, '127.0.0.1:')}`;
-    addCandidate({ transport: 'tcp', controllerUrl: normalizedTcp, label: `Clash Controller (${normalizedTcp})` });
-  }
-  addCandidate({ transport: 'tcp', controllerUrl: 'http://127.0.0.1:9097', label: 'Mihomo TCP (127.0.0.1:9097)' });
-  addCandidate({ transport: 'tcp', controllerUrl: 'http://127.0.0.1:9090', label: 'Mihomo TCP (127.0.0.1:9090)' });
-
-  for (const cand of candidates) {
+  const tryCandidate = async (cand) => {
     try {
       const ver = await callMihomoApi({
         controllerUrl: cand.controllerUrl || '',
@@ -110,9 +83,53 @@ export async function discoverClashVergeController(clashVergeDir) {
           coreVersion: ver.version || ''
         };
       }
-    } catch {
-      // 尝试下一个候选通道
+    } catch { /* try next */ }
+    return null;
+  };
+
+  // 第一阶段：优先探测无需 PowerShell 扫描的直连候选（<10ms 极速命中）
+  if (process.platform === 'win32' && cfgPipe) {
+    if (cfgPipe.includes('-sidecar-release-')) {
+      addCandidate({
+        transport: 'pipe',
+        socketPath: cfgPipe.replace('-sidecar-release-', '-production-'),
+        label: 'Clash Verge Service Pipe (自动识别)'
+      });
     }
+    addCandidate({ transport: 'pipe', socketPath: cfgPipe, label: 'Clash Verge Pipe (自动识别)' });
+  } else if (process.platform !== 'win32' && cfgUnix && fs.existsSync(cfgUnix)) {
+    addCandidate({ transport: 'unix', socketPath: cfgUnix, label: 'Clash Verge Unix Socket (自动识别)' });
+  }
+
+  if (cfgTcp) {
+    const normalizedTcp = cfgTcp.startsWith('http') ? cfgTcp : `http://${cfgTcp.replace(/^:/, '127.0.0.1:')}`;
+    addCandidate({ transport: 'tcp', controllerUrl: normalizedTcp, label: `Clash Controller (${normalizedTcp})` });
+  }
+
+  for (const cand of candidates) {
+    const hit = await tryCandidate(cand);
+    if (hit) return hit;
+  }
+
+  // 第二阶段：直连未命中时再动态枚举本机存活管道与默认 TCP 端口
+  const fallbackCandidates = [];
+  if (process.platform === 'win32') {
+    for (const p of listWindowsMihomoPipes()) {
+      const key = `pipe:${p}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        fallbackCandidates.push({ transport: 'pipe', socketPath: p, label: 'Clash Verge Named Pipe (自动识别)' });
+      }
+    }
+  }
+  fallbackCandidates.push(
+    { transport: 'tcp', controllerUrl: 'http://127.0.0.1:9097', label: 'Mihomo TCP (127.0.0.1:9097)' },
+    { transport: 'tcp', controllerUrl: 'http://127.0.0.1:9090', label: 'Mihomo TCP (127.0.0.1:9090)' }
+  );
+
+  for (const cand of fallbackCandidates) {
+    const hit = await tryCandidate(cand);
+    if (hit) return hit;
   }
 
   return {

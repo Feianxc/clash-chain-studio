@@ -8,6 +8,7 @@ import { StateStore } from './core/store.mjs';
 import { LocalSecretVault } from './core/vault.mjs';
 import { parseSubscriptionContent } from './core/yaml-bridge.mjs';
 import { normalizeSubscriptionProxies } from './core/rule-engine.mjs';
+import { generateSharedRuntimeConfig, validateCandidate } from './core/generators.mjs';
 import {
   buildCandidatePreview,
   commitAndApplyVersion,
@@ -33,7 +34,7 @@ import {
 import {
   cleanSafeDisposableCache,
   inspectDisposableCaches,
-  inspectLocalHostEnvironment,
+  listRunningTargetProcesses,
   runFullEnvironmentAudit
 } from './services/hygiene-service.mjs';
 import { RelayManager } from './services/relay-manager.mjs';
@@ -162,16 +163,16 @@ export function createAppServer({ projectRoot = PROJECT_ROOT } = {}) {
         const state = store.load();
         const winEnv = await inspectWindowsEnvironment(state);
         const nextVer = StateStore.nextVersionId(state.versions);
-        const preview = buildCandidatePreview(state, vault, nextVer);
+        const validation = validateCandidate(state, vault);
+        const sharedRuntime = validation.valid ? generateSharedRuntimeConfig(state, nextVer) : null;
         return sendJson(res, 200, {
           state: sanitizeStateForClient(state, vault),
           windowsEnv: winEnv,
           preview: {
-            valid: preview.valid,
-            versionId: preview.versionId,
-            validation: preview.validation,
-            windowsDiffStats: preview.windows?.diff ? { added: preview.windows.diff.added, removed: preview.windows.diff.removed, changed: preview.windows.diff.changed } : null,
-            sharedRuntime: preview.sharedRuntime
+            valid: validation.valid,
+            versionId: nextVer,
+            validation,
+            sharedRuntime
           },
           lanIps: getLocalLanAddresses()
         });
@@ -823,13 +824,12 @@ export function createAppServer({ projectRoot = PROJECT_ROOT } = {}) {
       }
 
       if (pathname === '/api/hygiene/caches' && method === 'GET') {
-        const state = store.load();
-        const host = inspectLocalHostEnvironment(state);
+        const proc = listRunningTargetProcesses();
         const caches = inspectDisposableCaches();
         return sendJson(res, 200, {
           caches,
-          runningTargets: host.runningTargets,
-          hostReadable: host.hostReadable
+          runningTargets: proc.runningTargets,
+          hostReadable: proc.ok
         });
       }
 
@@ -838,9 +838,8 @@ export function createAppServer({ projectRoot = PROJECT_ROOT } = {}) {
         if (body.confirm !== true) {
           return sendJson(res, 400, { error: '请先确认清理操作（仅清理渲染临时缓存，不动登录态）' });
         }
-        const state = store.load();
-        const host = inspectLocalHostEnvironment(state);
-        const activeNames = (host.runningTargets || []).map(p => p.ProcessName);
+        const proc = listRunningTargetProcesses();
+        const activeNames = (proc.runningTargets || []).map(p => p.ProcessName);
         const cleaned = cleanSafeDisposableCache({
           targetIds: Array.isArray(body.targetIds) ? body.targetIds : [],
           activeProcessNames: activeNames

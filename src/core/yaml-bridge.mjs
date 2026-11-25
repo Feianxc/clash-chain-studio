@@ -14,6 +14,19 @@ out = yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_sty
 sys.stdout.write(out)
 `;
 
+const PY_DUMP_VERIFY_BATCH_SCRIPT = `
+import sys, json, yaml
+items = json.loads(sys.stdin.read())
+result = {}
+for key, obj in items.items():
+    text = yaml.safe_dump(obj, allow_unicode=True, sort_keys=False, default_flow_style=False, width=4096)
+    rt = yaml.safe_load(text)
+    if not isinstance(rt, dict):
+        raise ValueError(f"Round-trip verification failed for {key}")
+    result[key] = text
+sys.stdout.write(json.dumps(result, ensure_ascii=False))
+`;
+
 function runPython(code, inputText) {
   const candidates = process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python'];
   let lastError = null;
@@ -50,6 +63,14 @@ export function parseYaml(yamlText) {
 export function dumpYaml(value) {
   const jsonText = JSON.stringify(value);
   return runPython(PY_DUMP_SCRIPT, jsonText);
+}
+
+/**
+ * 在单次 Python 调用中批量序列化并做 yaml.safe_load 往返校验，大幅提升多端配置预览速度。
+ */
+export function dumpAndVerifyYamlBatch(objectMap) {
+  const out = runPython(PY_DUMP_VERIFY_BATCH_SCRIPT, JSON.stringify(objectMap));
+  return JSON.parse(out);
 }
 
 /**

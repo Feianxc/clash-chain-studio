@@ -1072,8 +1072,17 @@ input:focus, select:focus, textarea:focus {
 
 .audit-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 14px;
+}
+
+.audit-grid .audit-card:nth-child(1),
+.audit-grid .audit-card:nth-child(2) {
+  grid-column: span 3;
+}
+
+.audit-grid .audit-card:nth-child(n + 3) {
+  grid-column: span 2;
 }
 
 .audit-card {
@@ -1085,6 +1094,8 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .audit-card.st-pass { border-left: 4px solid var(--direct); }
 .audit-card.st-fail { border-left: 4px solid var(--danger); }
@@ -1113,6 +1124,9 @@ input:focus, select:focus, textarea:focus {
 
 @media (max-width: 960px) {
   .audit-grid { grid-template-columns: 1fr; }
+  .audit-grid .audit-card:nth-child(1),
+  .audit-grid .audit-card:nth-child(2),
+  .audit-grid .audit-card:nth-child(n + 3) { grid-column: span 1; }
 }
 
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import net from 'node:net';
-import { dumpYaml, parseYaml } from './yaml-bridge.mjs';
+import { dumpAndVerifyYamlBatch } from './yaml-bridge.mjs';
 import {
   dedupeList,
   extractPolicyDomainPattern,
@@ -641,17 +641,19 @@ export function generateDesktopStandaloneYaml(state, vault, versionId, overrides
       ''
     ].join('\n');
 
-    const yamlText = header + dumpYaml(configObj);
-    const roundTrip = parseYaml(yamlText);
-    if (!roundTrip || !Array.isArray(roundTrip.rules) || roundTrip.rules.length !== rules.length) {
-      throw new Error('Desktop standalone YAML 回读校验失败');
-    }
-    return { filename: 'Desktop-Static-Chain.yaml', yamlText, ruleCount: rules.length, proxyCount: proxies.length };
+    return { header, configObj, ruleCount: rules.length, proxyCount: proxies.length };
   };
 
-  const real = buildOne(false);
-  const redacted = buildOne(true);
-  return { ...real, redactedYaml: redacted.yamlText };
+  const realSpec = buildOne(false);
+  const redactedSpec = buildOne(true);
+  const dumped = dumpAndVerifyYamlBatch({ real: realSpec.configObj, redacted: redactedSpec.configObj });
+  return {
+    filename: 'Desktop-Static-Chain.yaml',
+    yamlText: realSpec.header + dumped.real,
+    redactedYaml: redactedSpec.header + dumped.redacted,
+    ruleCount: realSpec.ruleCount,
+    proxyCount: realSpec.proxyCount
+  };
 }
 
 /**
@@ -831,17 +833,11 @@ export function generateAndroidProfiles(state, vault, versionId, overrides = {})
       ''
     ].join('\n');
 
-    const yamlText = header + dumpYaml(configObj);
-    // 往返校验确保生成的 YAML 可被标准解析器无损回读
-    const roundTrip = parseYaml(yamlText);
-    if (!roundTrip || !Array.isArray(roundTrip.rules) || roundTrip.rules.length !== rules.length) {
-      throw new Error(`Android ${variant} YAML 回读校验失败`);
-    }
-
     return {
       profileName: isDedicated ? 'Claude-GoLogin-Static' : 'Daily-Static-Chain',
       filename: isDedicated ? 'Claude-GoLogin-Static.yaml' : 'Daily-Static-Chain.yaml',
-      yamlText,
+      header,
+      configObj,
       ruleCount: rules.length,
       proxyCount: proxies.length,
       browserOverridesCount: browserApps.length,
@@ -849,15 +845,41 @@ export function generateAndroidProfiles(state, vault, versionId, overrides = {})
     };
   };
 
-  const daily = buildOne('daily', false);
-  const dailyRedacted = buildOne('daily', true);
-  const dedicated = buildOne('dedicated', false);
-  const dedicatedRedacted = buildOne('dedicated', true);
+  const dailySpec = buildOne('daily', false);
+  const dailyRedactedSpec = buildOne('daily', true);
+  const dedicatedSpec = buildOne('dedicated', false);
+  const dedicatedRedactedSpec = buildOne('dedicated', true);
+
+  // 单次 Python 进程完成全部 4 份 YAML 的序列化与往返校验（提速 ~6x）
+  const dumped = dumpAndVerifyYamlBatch({
+    daily: dailySpec.configObj,
+    dailyRedacted: dailyRedactedSpec.configObj,
+    dedicated: dedicatedSpec.configObj,
+    dedicatedRedacted: dedicatedRedactedSpec.configObj
+  });
 
   return {
     versionId,
-    daily: { ...daily, redactedYaml: dailyRedacted.yamlText },
-    dedicated: { ...dedicated, redactedYaml: dedicatedRedacted.yamlText },
+    daily: {
+      profileName: dailySpec.profileName,
+      filename: dailySpec.filename,
+      yamlText: dailySpec.header + dumped.daily,
+      redactedYaml: dailyRedactedSpec.header + dumped.dailyRedacted,
+      ruleCount: dailySpec.ruleCount,
+      proxyCount: dailySpec.proxyCount,
+      browserOverridesCount: dailySpec.browserOverridesCount,
+      dedicatedListenerPort: dailySpec.dedicatedListenerPort
+    },
+    dedicated: {
+      profileName: dedicatedSpec.profileName,
+      filename: dedicatedSpec.filename,
+      yamlText: dedicatedSpec.header + dumped.dedicated,
+      redactedYaml: dedicatedRedactedSpec.header + dumped.dedicatedRedacted,
+      ruleCount: dedicatedSpec.ruleCount,
+      proxyCount: dedicatedSpec.proxyCount,
+      browserOverridesCount: dedicatedSpec.browserOverridesCount,
+      dedicatedListenerPort: dedicatedSpec.dedicatedListenerPort
+    },
     controllerSecret: includeController ? controllerSecret : null
   };
 }

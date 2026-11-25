@@ -232,25 +232,75 @@ export function getSafeDisposableCacheTargets(baseAppData = process.env.APPDATA 
   ];
 }
 
-function measureDirSize(dirPath) {
-  if (!dirPath || !fs.existsSync(dirPath)) return { exists: false, files: 0, bytes: 0 };
+/**
+ * 轻量查询当前正在运行的 Claude / BitBrowser 进程（仅用 tasklist，无需拉起重型 PowerShell）。
+ */
+export function listRunningTargetProcesses() {
+  if (process.platform !== 'win32') return { ok: false, runningTargets: [] };
+  const res = spawnSync('tasklist.exe', ['/FO', 'CSV', '/NH'], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 3000,
+    maxBuffer: 4 * 1024 * 1024
+  });
+  if (res.error || res.status !== 0) return { ok: false, runningTargets: [] };
+  const targets = [];
+  for (const line of (res.stdout || '').split(/\r?\n/)) {
+    const m = /^"([^"]+)","(\d+)"/.exec(line.trim());
+    if (!m) continue;
+    const baseName = m[1].replace(/\.exe$/i, '');
+    if (/^(claude|bitbrowser|bit_browser)$/i.test(baseName)) {
+      targets.push({ ProcessName: baseName, Id: Number(m[2]) });
+    }
+  }
+  return { ok: true, runningTargets: targets };
+}
+
+function summarizeProcessesByApp(runningTargets = []) {
+  const counts = new Map();
+  for (const p of runningTargets) {
+    const raw = String(p.ProcessName || '').toLowerCase();
+    const label = raw === 'claude' ? 'Claude' : (raw.includes('bit') ? 'BitBrowser' : p.ProcessName);
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  const apps = [...counts.entries()].map(([name, count]) => ({ name, count }));
+  return {
+    appCount: apps.length,
+    processCount: runningTargets.length,
+    apps,
+    text: apps.map(a => `${a.name} (${a.count} 进程)`).join('、')
+  };
+}
+
+function measureDirSize(dirPath, maxDurationMs = 900) {
+  if (!dirPath || !fs.existsSync(dirPath)) return { exists: false, files: 0, bytes: 0, truncated: false };
   let files = 0;
   let bytes = 0;
-  const walk = (p, depth = 0) => {
-    if (depth > 8) return;
+  let truncated = false;
+  const deadline = Date.now() + maxDurationMs;
+  const stack = [{ p: dirPath, depth: 0 }];
+
+  while (stack.length > 0) {
+    if (Date.now() > deadline || files >= 6000) {
+      truncated = true;
+      break;
+    }
+    const { p, depth } = stack.pop();
+    if (depth > 6) continue;
     let entries = [];
-    try { entries = fs.readdirSync(p, { withFileTypes: true }); } catch { return; }
+    try { entries = fs.readdirSync(p, { withFileTypes: true }); } catch { continue; }
     for (const ent of entries) {
       const full = path.join(p, ent.name);
-      if (ent.isDirectory()) walk(full, depth + 1);
-      else if (ent.isFile()) {
+      if (ent.isDirectory()) {
+        stack.push({ p: full, depth: depth + 1 });
+      } else if (ent.isFile()) {
         files++;
         try { bytes += fs.statSync(full).size; } catch { /* ignore */ }
+        if (files >= 6000) { truncated = true; break; }
       }
     }
-  };
-  walk(dirPath);
-  return { exists: true, files, bytes };
+  }
+  return { exists: true, files, bytes, truncated };
 }
 
 export function inspectDisposableCaches(baseAppData) {
@@ -259,9 +309,11 @@ export function inspectDisposableCaches(baseAppData) {
     let totalFiles = 0;
     let totalBytes = 0;
     let existingPaths = 0;
+    let truncated = false;
     for (const p of t.paths) {
-      const m = measureDirSize(p);
+      const m = measureDirSize(p, 500);
       if (m.exists) existingPaths++;
+      if (m.truncated) truncated = true;
       totalFiles += m.files;
       totalBytes += m.bytes;
     }
@@ -269,6 +321,7 @@ export function inspectDisposableCaches(baseAppData) {
       ...t,
       existingPaths,
       totalFiles,
+      truncated,
       totalMB: Number((totalBytes / (1024 * 1024)).toFixed(2))
     };
   });
@@ -422,12 +475,12 @@ export async function runFullEnvironmentAudit(state) {
   }
   const leakStatus = leakIssues.length === 0 ? 'pass' : (leakIssues.some(x => x.includes('Relay')) ? 'partial' : 'partial');
 
-  // 5) 切换前进程残留检查
-  const procCount = host.runningTargets.length;
-  const procStatus = !host.hostReadable ? 'blocked' : (procCount === 0 ? 'pass' : 'partial');
-  const procNote = procCount === 0
-    ? '当前未检测到运行中的 Claude / BitBrowser 进程，可安全切换 IP、切时区或清理渲染缓存'
-    : `检测到 ${procCount} 个正在运行的相关进程（${[...new Set(host.runningTargets.map(p => p.ProcessName))].join(', ')}）；更换静态 IP 或切时区前建议先正常退出，避免旧渲染器缓存旧时区/长连接`;
+  // 5) 切换前进程残留检查（按应用名归类；日常正常运行时不误报系统异常，仅在切换/清理前提醒）
+  const procSummary = summarizeProcessesByApp(host.runningTargets);
+  const procStatus = !host.hostReadable ? 'blocked' : 'pass';
+  const procNote = procSummary.appCount === 0
+    ? '当前未检测到运行中的 Claude / BitBrowser，可安全切换 IP、切时区或清理渲染缓存'
+    : `检测到 ${procSummary.appCount} 个相关应用运行中：${procSummary.text}。正常使用不受影响；如需更换静态 IP、切回中国环境或清理渲染缓存，请先正常退出这些应用。`;
 
   const cards = [
     {
@@ -479,9 +532,11 @@ export async function runFullEnvironmentAudit(state) {
     },
     {
       id: 'process-guard',
-      title: '切换前进程残留检查',
+      title: '切换前进程状态',
       status: procStatus,
-      summary: procStatus === 'blocked' ? '未能读取进程列表' : (procCount === 0 ? '无活跃目标进程（可安全切换）' : `${procCount} 个目标进程运行中`),
+      summary: procStatus === 'blocked'
+        ? '未能读取进程列表'
+        : (procSummary.appCount === 0 ? '无活跃目标应用（可随时切换）' : `${procSummary.appCount} 个应用运行中（${procSummary.apps.map(a => a.name).join(' / ')}）`),
       details: [procNote],
       runningTargets: host.runningTargets
     }

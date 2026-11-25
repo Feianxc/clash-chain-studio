@@ -81,12 +81,15 @@ function activeCtx() {
 
 async function refresh(withPreview = false) {
   ui.bootstrap = await api('/api/bootstrap');
-  if (withPreview || ui.tab === 'rules' || ui.tab === 'android') {
-    ui.preview = await api('/api/preview');
-  }
   renderTopChrome();
   renderMainView();
   if (ui.drawer) renderDrawerContent();
+  if (withPreview || ui.tab === 'rules' || ui.tab === 'android') {
+    api('/api/preview').then(prev => {
+      ui.preview = prev;
+      if (ui.tab === 'rules' || ui.tab === 'android') renderMainView();
+    }).catch(() => {});
+  }
 }
 
 function renderTopChrome() {
@@ -1279,7 +1282,7 @@ function renderExpertCode() {
 
 function renderDiffLines(diff) {
   if (!diff?.lines?.length) return '当前无差异';
-  return diff.lines.map(l => `<span class="diff-line ${esc(l.type)}">${esc((l.prefix || '') + (l.type === 'skip' ? '' : ' ') + l.text)}</span>`).join('');
+  return diff.lines.map(l => `<span class="diff-line ${esc(l.type)}">${esc((l.prefix || '') + (l.type === 'skip' ? '' : ' ') + l.text)}</span>`).join('\n');
 }
 
 // =========================================================
@@ -1639,12 +1642,19 @@ async function runImportClashVerge() {
 }
 
 async function runWindowsProbe() {
+  const btn = document.getElementById('btnQuickProbe');
+  if (btn?.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = '探测中...'; }
   try {
     toast('正在探测 Windows 7897 / 17902 实际出口...');
     const res = await api('/api/probe/windows', { method: 'POST', body: JSON.stringify({ samples: 3 }) });
     toast(`探测结果：${res.probe.ruleProbe?.message || res.probe.status}`, res.probe.status === 'pass' ? 'ok' : 'error');
     await refresh();
-  } catch (err) { toast(err.message, 'error'); }
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '测出口'; }
+  }
 }
 
 async function openApplyModal() {
@@ -1697,13 +1707,19 @@ async function openApplyModal() {
 async function switchTab(tab) {
   ui.tab = tab;
   renderTopChrome();
+  renderMainView();
   if ((tab === 'rules' || tab === 'android') && !ui.preview) {
-    ui.preview = await api('/api/preview');
+    api('/api/preview').then(prev => {
+      ui.preview = prev;
+      if (ui.tab === tab) renderMainView();
+    }).catch(() => {});
   }
   if (tab === 'hygiene' && !ui.hygieneCaches && !ui.hygieneAudit) {
-    try { ui.hygieneCaches = await api('/api/hygiene/caches'); } catch { /* ignore */ }
+    api('/api/hygiene/caches').then(c => {
+      ui.hygieneCaches = c;
+      if (ui.tab === 'hygiene') renderMainView();
+    }).catch(() => {});
   }
-  renderMainView();
 }
 
 function init() {
